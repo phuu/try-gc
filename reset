@@ -1,0 +1,9 @@
+#!/bin/bash
+set -e
+
+mkdir -p heap
+touch heap/1
+touch heap/2
+touch heap/3
+touch heap/4
+touch heap/5
