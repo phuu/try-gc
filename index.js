@@ -1,8 +1,11 @@
+console.time('   ');
+
 require('es6-shim');
 var fs = require('fs');
 var RSVP = require('rsvp');
 var Promise = RSVP.Promise;
 var pathutil = require('path');
+var chalk = require('chalk');
 var _ = require('lodash');
 
 var readDir = RSVP.denodeify(fs.readdir);
@@ -16,20 +19,18 @@ var paths = {
     heap: './heap'
 };
 
-RSVP.hash({ roots: getAllPaths(paths.roots), heap: getAllPaths(paths.heap) })
-    .then(function (obj) {
-        console.log(require('util').inspect(obj.roots, { depth: null, colors: true }));
-        console.log(require('util').inspect(obj.heap, { depth: null, colors: true }));
 
-        return collectGarbage({
-            white: obj.heap,
-            grey: obj.roots,
-            black: []
-        })
-        .then(deleteFiles);
+RSVP.hash({
+        white: getAllPaths(paths.heap),
+        grey: getAllPaths(paths.roots),
+        black: []
     })
+    // .then(logPromise('pre GC'))
+    .then(collectGarbage)
+    // .then(logPromise('post GC'))
+    .then(deleteFiles)
     .then(function () {
-        console.log('Done!');
+        console.timeEnd('   ');
     })
     .catch(function (why) {
         console.error(why.stack);
@@ -41,35 +42,43 @@ RSVP.hash({ roots: getAllPaths(paths.roots), heap: getAllPaths(paths.heap) })
 
 // TODO: protect against circular references
 function collectGarbage(sets) {
-    var newSets = {
-        white: sets.white.slice(),
-        grey: [],
-        black: sets.black.concat(sets.grey)
-    }
-    return Promise.resolve(sets.grey)
+    var filesToScan = sets.grey;
+    // All greys go into the black set as they are reachable
+    sets.black = sets.black.concat(sets.grey);
+    // Reset grey; it's our new target
+    sets.grey = [];
+    // Open & parse all the files in the grey set
+    return Promise.resolve(filesToScan)
         .then(map(readFileAsText))
         .then(map(jsonParseFile))
+        // current: { path: '', contents: '', data: {} }
         .then(map(function (current) {
-            console.log('== == ========================');
-            console.log(require('util').inspect(current, { depth: null, colors: true }));
-
+            // Search the object for references to the heap
             var heapIds = getElements(searchObjectForHeapRefs(current.data));
-            console.log('heapIds', heapIds);
-
-            // Grab full paths for all heap references and pull them out of white
-            resolveFiles(paths.heap, heapIds)
-                .map(function (heapPath) {
-                    if (newSets.white.indexOf(heapPath) > -1) {
-                        newSets.white = _.without(newSets.white, heapPath);
-                        newSets.grey.push(heapPath);
-                    }
-                });
+            // Grab full paths for all heap references
+            resolveFiles(paths.heap, heapIds).map(function (heapPath) {
+                // Don't recurse!
+                if (sets.black.indexOf(heapPath) > -1 || sets.grey.indexOf(heapPath) > -1) {
+                    return console.log(chalk.red('circular'), current.path, chalk.yellow('<->'), heapPath);
+                }
+                // Don't try move something we ain't got.
+                // TODO: this is a null-pointer. What to do?
+                if (sets.white.indexOf(heapPath) > -1) {
+                    // pull them out of white
+                    sets.white = _.without(sets.white, heapPath);
+                    // And into grey!
+                    sets.grey.push(heapPath);
+                }
+            });
         }))
         .then(function () {
-            if (newSets.grey.length) {
-                return collectGarbage(newSets);
+            // Do we have a new set of greys?
+            if (sets.grey.length) {
+                // Go again!
+                return collectGarbage(sets);
             }
-            return newSets;
+            // Ok, we're done here
+            return sets;
         })
 }
 
@@ -105,6 +114,7 @@ function getAllPaths(directory) {
 }
 
 function deleteFiles(sets) {
+    console.log(chalk.red('GC'), require('util').inspect(sets.white, { depth: null, colors: true }));
     return Promise.all(sets.white.map(function (path) {
         return deleteFile(path);
     }));
