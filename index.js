@@ -40,7 +40,6 @@ RSVP.hash({
  * Utils
  */
 
-// TODO: protect against circular references
 function collectGarbage(sets) {
     var filesToScan = sets.grey;
     // All greys go into the black set as they are reachable
