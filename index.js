@@ -16,47 +16,17 @@ var paths = {
     heap: './heap'
 };
 
-var set = {
-    white: [],
-    grey: [],
-    black: []
-};
-
-RSVP.hash({ roots: getRoots(), heap: getHeap() })
+RSVP.hash({ roots: getAllPaths(paths.roots), heap: getAllPaths(paths.heap) })
     .then(function (obj) {
         console.log(require('util').inspect(obj.roots, { depth: null, colors: true }));
         console.log(require('util').inspect(obj.heap, { depth: null, colors: true }));
-        // Add the roots to the black set
-        set.black = set.black.concat(obj.roots.slice());
-        // Add the heap objects to the white set
-        set.white = set.white.concat(obj.heap.slice());
-        // Visit the roots and add what we find to the grey set
-        set.black.forEach(function (root) {
-            var heapIds = getIterableElements(searchObject(root));
-            resolveFiles(paths.heap, heapIds).map(function (heapPath) {
-                set.white = _.without(set.white, heapPath);
-                set.grey.push(heapPath);
-            });
-        });
 
-        var gcPromises = infiniterate(set.grey, function (heapPath) {
-            return readFileAsText(heapPath)
-                .then(jsonParseFile)
-                .then(function (heapObject) {
-                    var heapIds = getIterableElements(searchObject(heapObject));
-                    resolveFiles(paths.heap, heapIds).map(function (heapPath) {
-                        set.white = _.without(set.white, heapPath);
-                        set.grey.push(heapPath);
-                    });
-                    set.grey = _.without(set.grey, heapPath);
-                    set.black.push(heapObject);
-                    return heapObject;
-                });
-        });
-        return Promise.all(gcPromises).then(function () {
-            console.log('GC:', getIterableElements(set.white));
-            return deleteFiles(getIterableElements(set.white));
+        return collectGarbage({
+            white: obj.heap,
+            grey: obj.roots,
+            black: []
         })
+        .then(deleteFiles);
     })
     .then(function () {
         console.log('Done!');
@@ -69,13 +39,47 @@ RSVP.hash({ roots: getRoots(), heap: getHeap() })
  * Utils
  */
 
+// TODO: protect against circular references
+function collectGarbage(sets) {
+    var newSets = {
+        white: sets.white.slice(),
+        grey: [],
+        black: sets.black.concat(sets.grey)
+    }
+    return Promise.resolve(sets.grey)
+        .then(map(readFileAsText))
+        .then(map(jsonParseFile))
+        .then(map(function (current) {
+            console.log('== == ========================');
+            console.log(require('util').inspect(current, { depth: null, colors: true }));
+
+            var heapIds = getElements(searchObjectForHeapRefs(current.data));
+            console.log('heapIds', heapIds);
+
+            // Grab full paths for all heap references and pull them out of white
+            resolveFiles(paths.heap, heapIds)
+                .map(function (heapPath) {
+                    if (newSets.white.indexOf(heapPath) > -1) {
+                        newSets.white = _.without(newSets.white, heapPath);
+                        newSets.grey.push(heapPath);
+                    }
+                });
+        }))
+        .then(function () {
+            if (newSets.grey.length) {
+                return collectGarbage(newSets);
+            }
+            return newSets;
+        })
+}
+
 /**
  * Recursively search an object for heap references, which look like: "<heapPrefix><id>". Assumes
  * arrays of strings are homogeneous to avoid recursing into buffers.
  * Returns a Set.
  * TODO: Sets are meh
  */
-function searchObject(obj, visited) {
+function searchObjectForHeapRefs(obj, visited) {
     // Keep track of where we've been
     visited = visited || new Set();
     if (visited.has(obj)) return [];
@@ -89,28 +93,20 @@ function searchObject(obj, visited) {
         } else if (typeof value === 'object') {
             // Check array contains a string. We assume from here that it's homogeneous
             if (!Array.isArray(obj) || (typeof obj[0] === 'string')) {
-                Object.mixin(memo, searchObject(value, visited));
+                Object.mixin(memo, searchObjectForHeapRefs(value, visited));
             }
         }
         return memo;
     }, new Set());
 }
 
-function getRoots() {
-    return readDir(paths.roots)
-        .then(resolveFiles.bind(null, paths.roots))
-        .then(readFilesAsText)
-        .then(jsonParseFileArray);
+function getAllPaths(directory) {
+    return readDir(directory).then(resolveFiles.bind(null, directory))
 }
 
-function getHeap() {
-    return readDir(paths.heap)
-        .then(resolveFiles.bind(null, paths.heap));
-}
-
-function deleteFiles(paths) {
-    return Promise.all(paths.map(function (path) {
-        return console.log('delete', path);
+function deleteFiles(sets) {
+    return Promise.all(sets.white.map(function (path) {
+        return deleteFile(path);
     }));
 }
 
@@ -125,10 +121,6 @@ function resolveFiles(rootPath, files) {
     });
 }
 
-function readFilesAsText(paths) {
-    return Promise.all(paths.map(readFileAsText));
-}
-
 function readFileAsText(path) {
     return readFile(path, { encoding: 'utf8' }).then(function (contents) {
         return {
@@ -138,16 +130,18 @@ function readFileAsText(path) {
     });
 }
 
-function jsonParseFileArray(files) {
-    return files.map(jsonParseFile);
-}
-
 function jsonParseFile(fileData) {
     fileData.data = JSON.parse(fileData.contents);
     return fileData;
 }
 
-function getIterableElements(iterable) {
+function map(fn, ctx) {
+    return function (iterable) {
+        return Promise.all(iterable.map(fn, ctx));
+    }
+}
+
+function getElements(iterable) {
     var elems = [];
     iterable.forEach(function (elem) {
         elems.push(elem);
@@ -155,19 +149,9 @@ function getIterableElements(iterable) {
     return elems;
 }
 
-function infiniterate(iterable, fn, ctx) {
-    var i = 0;
-    var result = [];
-    while (i < iterable.length) {
-        result.push(fn.call(ctx, iterable[i], i, iterable));
-        i++;
-    }
-    return result;
-}
-
 function logPromise(name) {
     return function (arg) {
-        console.log(name, arg);
+        console.log(name, require('util').inspect(arg, { depth: null, colors: true }));
         return arg;
     }
 }

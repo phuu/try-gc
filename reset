@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+mkdir -p roots
+touch roots/http-example-com.json && echo '{ "caches": [ "heap!1.json" ] }' > roots/http-example-com.json
+touch roots/http-google-com.json && echo '{ "caches": [ "heap!2.json", "heap!3.json" ] }' > roots/http-google-com.json
+
 mkdir -p heap
 touch heap/1.json && echo '{ "bodies": [ "heap!4.json" ] }' > heap/1.json
 touch heap/2.json && echo '{ "bodies": [ "heap!5.json", "heap!6.json" ] }' > heap/2.json
