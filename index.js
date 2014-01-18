@@ -26,7 +26,7 @@ RSVP.hash({
         black: []
     })
     // .then(logPromise('pre GC'))
-    .then(collectGarbage)
+    .then(triColorMatch)
     // .then(logPromise('post GC'))
     .then(deleteFiles)
     .then(function () {
@@ -37,10 +37,11 @@ RSVP.hash({
     });
 
 /**
- * Utils
+ * Recursively scan grey set to produce a white set to be GC'd.
+ * Takes a set object with white, grey and black sets.
+ * Returns a promise for the manipulated sets.
  */
-
-function collectGarbage(sets) {
+function triColorMatch(sets) {
     var filesToScan = sets.grey;
     // All greys go into the black set as they are reachable
     sets.black = sets.black.concat(sets.grey);
@@ -53,7 +54,7 @@ function collectGarbage(sets) {
         // current: { path: '', contents: '', data: {} }
         .then(map(function (current) {
             // Search the object for references to the heap
-            var heapIds = getElements(searchObjectForHeapRefs(current.data));
+            var heapIds = getElements(searhForHeapRefs(current.data));
             // Grab full paths for all heap references
             resolveFiles(paths.heap, heapIds).map(function (heapPath) {
                 // Don't recurse!
@@ -74,7 +75,7 @@ function collectGarbage(sets) {
             // Do we have a new set of greys?
             if (sets.grey.length) {
                 // Go again!
-                return collectGarbage(sets);
+                return triColorMatch(sets);
             }
             // Ok, we're done here
             return sets;
@@ -84,10 +85,11 @@ function collectGarbage(sets) {
 /**
  * Recursively search an object for heap references, which look like: "<heapPrefix><id>". Assumes
  * arrays of strings are homogeneous to avoid recursing into buffers.
+ * Takes the object to be search, and an optional list of previously visited objects.
  * Returns a Set.
  * TODO: Sets are meh
  */
-function searchObjectForHeapRefs(obj, visited) {
+function searhForHeapRefs(obj, visited) {
     // Keep track of where we've been
     visited = visited || new Set();
     if (visited.has(obj)) return [];
@@ -101,12 +103,16 @@ function searchObjectForHeapRefs(obj, visited) {
         } else if (typeof value === 'object') {
             // Check array contains a string. We assume from here that it's homogeneous
             if (!Array.isArray(obj) || (typeof obj[0] === 'string')) {
-                Object.mixin(memo, searchObjectForHeapRefs(value, visited));
+                Object.mixin(memo, searhForHeapRefs(value, visited));
             }
         }
         return memo;
     }, new Set());
 }
+
+/**
+ * Utils
+ */
 
 function getAllPaths(directory) {
     return readDir(directory).then(resolveFiles.bind(null, directory))
