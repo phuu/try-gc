@@ -3,10 +3,13 @@ var fs = require('fs');
 var RSVP = require('rsvp');
 var Promise = RSVP.Promise;
 var pathutil = require('path');
+var _ = require('lodash');
 
 var readDir = RSVP.denodeify(fs.readdir);
 var deleteFile = RSVP.denodeify(fs.unlink);
 var readFile = RSVP.denodeify(fs.readFile);
+
+var heapPrefix = 'heap!';
 
 var paths = {
     roots: './roots',
@@ -14,34 +17,46 @@ var paths = {
 };
 
 var set = {
-    white: new Set(),
-    grey: new Set(),
-    black: new Set()
+    white: [],
+    grey: [],
+    black: []
 };
 
-var obj = {
-    roots: null,
-    heap: null
-};
-
-Promise.resolve()
-    .then(getRoots)
-    .then(getHeap)
-    .then(function () {
-        console.log('obj.roots', obj.roots);
-        console.log('obj.heap', obj.heap);
+RSVP.hash({ roots: getRoots(), heap: getHeap() })
+    .then(function (obj) {
+        console.log(require('util').inspect(obj.roots, { depth: null, colors: true }));
+        console.log(require('util').inspect(obj.heap, { depth: null, colors: true }));
+        // Add the roots to the black set
+        set.black = set.black.concat(obj.roots.slice());
         // Add the heap objects to the white set
-        obj.heap.map(set.white.add.bind(set.white));
+        set.white = set.white.concat(obj.heap.slice());
         // Visit the roots and add what we find to the grey set
-        obj.roots.forEach(function (root) {
-            resolveFiles(paths.heap, root.data.caches).map(function (cachePath) {
-                set.white.delete(cachePath);
-                set.grey.add(cachePath);
+        set.black.forEach(function (root) {
+            var heapIds = getIterableElements(searchObject(root));
+            resolveFiles(paths.heap, heapIds).map(function (heapPath) {
+                set.white = _.without(set.white, heapPath);
+                set.grey.push(heapPath);
             });
         });
 
-        console.log('GC:', getIterableElements(set.white));
-        return deleteFiles(getIterableElements(set.white));
+        var gcPromises = infiniterate(set.grey, function (heapPath) {
+            return readFileAsText(heapPath)
+                .then(jsonParseFile)
+                .then(function (heapObject) {
+                    var heapIds = getIterableElements(searchObject(heapObject));
+                    resolveFiles(paths.heap, heapIds).map(function (heapPath) {
+                        set.white = _.without(set.white, heapPath);
+                        set.grey.push(heapPath);
+                    });
+                    set.grey = _.without(set.grey, heapPath);
+                    set.black.push(heapObject);
+                    return heapObject;
+                });
+        });
+        return Promise.all(gcPromises).then(function () {
+            console.log('GC:', getIterableElements(set.white));
+            return deleteFiles(getIterableElements(set.white));
+        })
     })
     .then(function () {
         console.log('Done!');
@@ -54,23 +69,48 @@ Promise.resolve()
  * Utils
  */
 
+/**
+ * Recursively search an object for heap references, which look like: "<heapPrefix><id>". Assumes
+ * arrays of strings are homogeneous to avoid recursing into buffers.
+ * Returns a Set.
+ * TODO: Sets are meh
+ */
+function searchObject(obj, visited) {
+    // Keep track of where we've been
+    visited = visited || new Set();
+    if (visited.has(obj)) return [];
+    visited.add(obj);
+    // Visit every key
+    return Object.keys(obj).reduce(function (memo, key) {
+        var value = obj[key];
+        if (!value) return memo;
+        if (typeof value === 'string' && value.startsWith(heapPrefix)) {
+            memo.add(value.slice(heapPrefix.length));
+        } else if (typeof value === 'object') {
+            // Check array contains a string. We assume from here that it's homogeneous
+            if (!Array.isArray(obj) || (typeof obj[0] === 'string')) {
+                Object.mixin(memo, searchObject(value, visited));
+            }
+        }
+        return memo;
+    }, new Set());
+}
+
 function getRoots() {
     return readDir(paths.roots)
         .then(resolveFiles.bind(null, paths.roots))
         .then(readFilesAsText)
-        .then(jsonParseArray)
-        .then(saveAs.bind(null, obj, 'roots'));
+        .then(jsonParseFileArray);
 }
 
 function getHeap() {
     return readDir(paths.heap)
-        .then(resolveFiles.bind(null, paths.heap))
-        .then(saveAs.bind(null, obj, 'heap'));
+        .then(resolveFiles.bind(null, paths.heap));
 }
 
 function deleteFiles(paths) {
     return Promise.all(paths.map(function (path) {
-        return deleteFile(path);
+        return console.log('delete', path);
     }));
 }
 
@@ -86,21 +126,25 @@ function resolveFiles(rootPath, files) {
 }
 
 function readFilesAsText(paths) {
-    return Promise.all(paths.map(function (path) {
-        return readFile(path, { encoding: 'utf8' }).then(function (contents) {
-            return {
-                path: path,
-                contents: contents
-            };
-        });
-    }));
+    return Promise.all(paths.map(readFileAsText));
 }
 
-function jsonParseArray(files) {
-    return files.map(function (fileData) {
-        fileData.data = JSON.parse(fileData.contents);
-        return fileData;
+function readFileAsText(path) {
+    return readFile(path, { encoding: 'utf8' }).then(function (contents) {
+        return {
+            path: path,
+            contents: contents
+        };
     });
+}
+
+function jsonParseFileArray(files) {
+    return files.map(jsonParseFile);
+}
+
+function jsonParseFile(fileData) {
+    fileData.data = JSON.parse(fileData.contents);
+    return fileData;
 }
 
 function getIterableElements(iterable) {
@@ -109,4 +153,21 @@ function getIterableElements(iterable) {
         elems.push(elem);
     });
     return elems;
+}
+
+function infiniterate(iterable, fn, ctx) {
+    var i = 0;
+    var result = [];
+    while (i < iterable.length) {
+        result.push(fn.call(ctx, iterable[i], i, iterable));
+        i++;
+    }
+    return result;
+}
+
+function logPromise(name) {
+    return function (arg) {
+        console.log(name, arg);
+        return arg;
+    }
 }

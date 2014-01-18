@@ -2,8 +2,11 @@
 set -e
 
 mkdir -p heap
-touch heap/1
-touch heap/2
-touch heap/3
-touch heap/4
-touch heap/5
+touch heap/1.json && echo '{ "bodies": [ "heap!4.json" ] }' > heap/1.json
+touch heap/2.json && echo '{ "bodies": [ "heap!5.json", "heap!6.json" ] }' > heap/2.json
+touch heap/3.json && echo '{ "body": [ "heap!7.json" ] }' > heap/3.json
+touch heap/4.json && echo '{ "data": [ 64, 112, 104, 117, 117, 110, 101, 116 ] }' > heap/4.json
+touch heap/5.json && echo '{ "data": [ 64, 106, 97, 107, 101, 97, 114, 99, 104, 105, 98, 97, 108, 100 ] }' > heap/5.json
+touch heap/6.json && echo '{ "data": [ 64, 97, 110, 100, 121, 104, 117, 109, 101 ] }' > heap/6.json
+touch heap/7.json && echo '{ "data": [ 64, 112, 97, 115, 115, 121 ] }' > heap/7.json
+touch heap/8.json && echo '{ "data": [ 103, 99, 39, 100 ] }' > heap/8.json
